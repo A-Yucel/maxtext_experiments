@@ -1101,7 +1101,7 @@ def create_device_mesh(config, devices=None):
 # -----------------------------------------------------------------------------
 
 
-def create_learning_rate_schedule(config):
+def create_learning_rate_schedule_cosine(config):
   """Creates a warmup and cosine decay learning rate schedule:
   We take inspiration from Llama2's learning rate (LR) schedule, see https://arxiv.org/pdf/2307.09288.pdf section 2.2
   Learning rate schedule has either two or three parts:
@@ -1142,3 +1142,50 @@ def create_learning_rate_schedule(config):
     boundaries.append(warmup_steps + cos_steps + constant_zero_steps)
 
   return optax.join_schedules(pieces, boundaries)
+
+
+def create_learning_rate_schedule_wsd(config):
+  """Warmup–Stable–Decay learning rate schedule.
+
+  Phases (total 'learning_rate_schedule_steps'):
+    1) Warmup: linear 0 -> [learning_rate] over:
+         warmup_steps = learning_rate_schedule_steps * warmup_steps_fraction
+    2) Stable: constant [learning_rate] over:
+         stable_steps = learning_rate_schedule_steps * stable_steps_fraction  (default 0.0)
+    3) Decay: linear (polynomial power=1) from [learning_rate] ->
+         [learning_rate * cosine_learning_rate_final_fraction]
+         for the remaining schedule steps
+    4) Optional constant 0 from learning_rate_schedule_steps -> steps
+  """
+  lr = config.learning_rate
+  final_lr = lr * config.cosine_learning_rate_final_fraction
+
+  warmup_steps = int(config.learning_rate_schedule_steps * config.warmup_steps_fraction)
+  decay_steps = int(config.learning_rate_schedule_steps * config.decay_steps_fraction)
+  stable_steps = config.learning_rate_schedule_steps - warmup_steps - decay_steps
+  constant_zero_steps = config.steps - config.learning_rate_schedule_steps
+
+  warmup_schedule = optax.linear_schedule(init_value=0.0, end_value=lr, transition_steps=warmup_steps)
+  stable_schedule = optax.constant_schedule(lr)
+  decay_schedule = optax.linear_schedule(init_value=lr, end_value=0, transition_steps=decay_steps)
+
+  constant_schedule = optax.constant_schedule(0.0)
+
+  pieces = [warmup_schedule, stable_schedule, decay_schedule]
+  boundaries = [
+      warmup_steps,
+      warmup_steps + stable_steps,
+      warmup_steps + stable_steps + decay_steps,
+  ]
+
+  if constant_zero_steps > 0:
+    pieces.append(constant_schedule)
+    boundaries.append(warmup_steps + stable_steps + decay_steps + constant_zero_steps)
+
+  return optax.join_schedules(pieces, boundaries)
+
+def create_learning_rate_schedule(config):
+  schedule_type = config.schedule_type
+  if schedule_type == "wsd":
+    return create_learning_rate_schedule_wsd(config)
+  return create_learning_rate_schedule_cosine(config)  # rename your original
